@@ -2,26 +2,63 @@
 -- These RPCs are deliberately available to service_role only. No SECURITY DEFINER.
 begin;
 
+-- Allows the script to be re-applied safely when function signatures or return types change.
+drop function if exists public.hermes_claim_run(text,text,text,text,text,text,integer);
+drop function if exists public.hermes_heartbeat_run(text,text,integer);
+drop function if exists public.hermes_finish_run(text,text,text,jsonb);
+drop function if exists public.hermes_recover_expired_lock(text);
+
 create or replace function public.hermes_claim_run(
   p_run_id text, p_issue_id text, p_agent text, p_risk text,
   p_mode text, p_environment text, p_ttl_seconds integer
-) returns void language plpgsql security invoker set search_path = '' as $$
+) returns boolean language plpgsql security invoker set search_path = '' as $$
+declare
+  v_holder_run text;
+  v_holder_agent text;
 begin
   if p_ttl_seconds < 10 or p_ttl_seconds > 86400 then
     raise exception 'Invalid lock TTL';
   end if;
   -- Serializes claims against recovery for this issue. The unique index/PK is the final guard.
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_issue_id, 0));
-  insert into public.agent_runs
-    (run_id, linear_issue_id, agent, status, risk, execution_mode, environment)
-  values (p_run_id, p_issue_id, p_agent, 'running', p_risk, p_mode, p_environment);
-  insert into public.agent_execution_locks
-    (linear_issue_id, run_id, agent, expires_at)
-  values (p_issue_id, p_run_id, p_agent, pg_catalog.now() + pg_catalog.make_interval(secs => p_ttl_seconds));
+  begin
+    -- Keep the run and lock inserts in the same exception scope so either both succeed or
+    -- the conflict path returns false without leaving a partial rejected run behind.
+    insert into public.agent_runs
+      (run_id, linear_issue_id, agent, status, risk, execution_mode, environment)
+    values (p_run_id, p_issue_id, p_agent, 'queued', p_risk, p_mode, p_environment);
+    insert into public.agent_execution_locks
+      (linear_issue_id, run_id, agent, expires_at)
+    values (p_issue_id, p_run_id, p_agent, pg_catalog.now() + pg_catalog.make_interval(secs => p_ttl_seconds));
+  exception when unique_violation then
+    -- The failed subtransaction rolls back the attempted insert(s). Audit the holder instead
+    -- of creating/updating a synthetic failed run for the rejected attempt.
+    select l.run_id, l.agent into v_holder_run, v_holder_agent
+    from public.agent_execution_locks l
+    where l.linear_issue_id = p_issue_id;
+    if v_holder_run is null then
+      select r.run_id, r.agent into v_holder_run, v_holder_agent
+      from public.agent_runs r
+      where r.linear_issue_id = p_issue_id
+        and r.status in ('queued', 'running', 'reviewing', 'blocked')
+      order by r.started_at desc
+      limit 1;
+    end if;
+    if v_holder_run is not null then
+      insert into public.agent_events (run_id, linear_issue_id, agent, event_type, payload)
+      values (v_holder_run, p_issue_id, v_holder_agent, 'lock.rejected',
+              pg_catalog.jsonb_build_object('reason', 'RunConflict',
+                                            'attempted_run_id', p_run_id));
+    end if;
+    return false;
+  end;
+  update public.agent_runs set status = 'running', heartbeat_at = pg_catalog.now()
+  where run_id = p_run_id and linear_issue_id = p_issue_id;
   insert into public.agent_events (run_id, linear_issue_id, agent, event_type)
   values (p_run_id, p_issue_id, p_agent, 'run.created'),
          (p_run_id, p_issue_id, p_agent, 'lock.acquired'),
          (p_run_id, p_issue_id, p_agent, 'run.started');
+  return true;
 end;
 $$;
 
@@ -78,6 +115,12 @@ begin
 end;
 $$;
 
+-- 'blocked' is terminal in the runtime but remains in the partial unique index
+-- uq_agent_runs_active_issue: no new claim can enter the issue until an operator
+-- releases it. Runbook (service_role / dashboard, never by the runtime):
+--   update public.agent_runs set status = 'canceled', finished_at = now(),
+--          error = 'ReleasedByOperator'
+--   where linear_issue_id = '<ISSUE>' and status = 'blocked';
 create or replace function public.hermes_recover_expired_lock(p_issue_id text)
 returns boolean language plpgsql security invoker set search_path = '' as $$
 declare v_lock public.agent_execution_locks%rowtype;
@@ -108,4 +151,9 @@ grant execute on function public.hermes_claim_run(text,text,text,text,text,text,
 grant execute on function public.hermes_heartbeat_run(text,text,integer) to service_role;
 grant execute on function public.hermes_finish_run(text,text,text,jsonb) to service_role;
 grant execute on function public.hermes_recover_expired_lock(text) to service_role;
+
+-- Harden the sequence beyond the default Supabase grants for anon/authenticated.
+revoke all on sequence public.agent_events_id_seq from anon, authenticated;
+grant usage, select on sequence public.agent_events_id_seq to service_role;
+
 commit;

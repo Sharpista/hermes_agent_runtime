@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import secrets
 from threading import Event, Thread
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, runtime_checkable
 
 
 ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -77,6 +77,11 @@ class Store(Protocol):
     def recover(self, issue_id: str) -> bool: ...
 
 
+@runtime_checkable
+class LockRejectionSink(Protocol):
+    def lock_rejected(self, context: ExecutionContext, reason: str) -> None: ...
+
+
 class AgentRuntime:
     def __init__(self, store: Store, *, ttl_seconds: int = 600, heartbeat_seconds: int = 30):
         if ttl_seconds < 10 or heartbeat_seconds < 1 or heartbeat_seconds * 2 >= ttl_seconds:
@@ -88,6 +93,9 @@ class AgentRuntime:
     def classify(self, issue: Issue) -> tuple[str, str, str, str]:
         if issue.status != "Todo":
             raise ExecutionBlocked("Only Todo issues can start a new run")
+        unknown_agent_labels = [label for label in issue.labels if label.startswith("agent:") and label not in AGENTS]
+        if unknown_agent_labels:
+            raise ExecutionBlocked("Unknown agent label")
         agents = issue.labels.intersection(AGENTS)
         if len(agents) != 1:
             raise ExecutionBlocked("Orchestrator must classify missing or ambiguous agent labels")
@@ -110,7 +118,12 @@ class AgentRuntime:
         agent, risk, mode, environment = self.classify(issue)
         context = ExecutionContext(new_run_id(), issue.identifier, agent, risk, mode, environment)
         # One database transaction inserts the run and lock. A conflict creates no orphan run.
-        self.store.claim(context, self.ttl_seconds)
+        try:
+            self.store.claim(context, self.ttl_seconds)
+        except RunConflict:
+            if isinstance(self.store, LockRejectionSink):
+                self.store.lock_rejected(context, "RunConflict")
+            raise
         stop = Event()
         heartbeat_errors: list[BaseException] = []
 
@@ -134,12 +147,12 @@ class AgentRuntime:
             worker.join()
             if heartbeat_errors:
                 raise RuntimeError("Heartbeat failed; execution outcome requires review")
+            for kind, payload in result.events:
+                self.store.event(context, kind, payload)
             if agent in {"dev-backend", "dev-frontend", "devops"} and (
                 result.tests_status != "passed" or result.review_status != "approved"
             ):
                 raise ExecutionBlocked("Required test and review gates are incomplete")
-            for kind, payload in result.events:
-                self.store.event(context, kind, payload)
             if move_status:
                 move_status(issue.identifier, "In Review")
             # Dispatcher must supply QA/review results; this boundary never marks Linear Done.
