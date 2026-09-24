@@ -1,4 +1,8 @@
 import unittest
+from email.message import Message
+from io import BytesIO
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from hermes_agent_runtime.runtime import (
     AgentRuntime, ExecutionBlocked, ExecutionContext, ExecutionResult, Issue, RunConflict, new_run_id,
@@ -6,6 +10,7 @@ from hermes_agent_runtime.runtime import (
 from hermes_agent_runtime.kanban import (
     KanbanDispatcherAdapter, KanbanRunSnapshot, KanbanTaskSnapshot,
 )
+from hermes_agent_runtime.supabase import SupabaseStore
 
 
 class MemoryStore:
@@ -103,6 +108,22 @@ class RuntimeTests(unittest.TestCase):
         ):
             with self.subTest(labels=labels), self.assertRaises(ExecutionBlocked):
                 self.runtime.execute(Issue("LOL-57", frozenset(labels)), lambda _: None)
+
+
+class SupabaseStoreTests(unittest.TestCase):
+    def test_claim_translates_http_409_to_run_conflict(self):
+        store = SupabaseStore("https://example.supabase.co", "service-role-key")
+        error = HTTPError(
+            "https://example.supabase.co/rest/v1/rpc/hermes_claim_run",
+            409,
+            "Conflict",
+            hdrs=Message(),
+            fp=BytesIO(b'{"code":"23505"}'),
+        )
+
+        with patch("hermes_agent_runtime.supabase.urlopen", side_effect=error):
+            with self.assertRaises(RunConflict):
+                store.claim(next_context(), ttl_seconds=60)
 
 
 class KanbanAdapterTests(unittest.TestCase):
