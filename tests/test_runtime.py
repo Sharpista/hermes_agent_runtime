@@ -1,7 +1,10 @@
 import unittest
 
 from hermes_agent_runtime.runtime import (
-    AgentRuntime, ExecutionBlocked, ExecutionResult, Issue, RunConflict, new_run_id,
+    AgentRuntime, ExecutionBlocked, ExecutionContext, ExecutionResult, Issue, RunConflict, new_run_id,
+)
+from hermes_agent_runtime.kanban import (
+    KanbanDispatcherAdapter, KanbanRunSnapshot, KanbanTaskSnapshot,
 )
 
 
@@ -23,6 +26,9 @@ class MemoryStore:
 
     def event(self, context, kind, payload):
         self.events.append((context.run_id, kind))
+
+    def lock_rejected(self, context, reason):
+        self.events.append((context.run_id, "lock.rejected", reason))
 
     def finish(self, context, status, fields):
         if self.active.get(context.linear_issue_id) != context.run_id:
@@ -66,6 +72,7 @@ class RuntimeTests(unittest.TestCase):
             self.runtime.execute(self.issue, lambda ctx: called.append(ctx))
         self.assertEqual([], called)
         self.assertEqual("run_another", self.store.active["LOL-56"])
+        self.assertEqual("lock.rejected", self.store.events[-1][1])
 
     def test_failure_is_terminal_and_releases_lock(self):
         def broken(_):
@@ -77,9 +84,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_missing_quality_gate_is_blocked(self):
         with self.assertRaises(ExecutionBlocked):
-            self.runtime.execute(self.issue, lambda _: ExecutionResult(tests_status="passed"))
+            self.runtime.execute(self.issue, lambda _: ExecutionResult(
+                tests_status="passed",
+                events=(("tests.completed", {"passed": 7}),),
+            ))
         self.assertEqual(["blocked"], list(self.store.runs.values()))
         self.assertEqual({}, self.store.active)
+        self.assertTrue(any(event[1] == "tests.completed" for event in self.store.events))
 
     def test_ambiguous_or_sensitive_issue_is_not_dispatched(self):
         for labels in (
@@ -87,10 +98,101 @@ class RuntimeTests(unittest.TestCase):
             {"agent:backend", "env:production"},
             {"agent:backend", "risk:critical"},
             {"agent:backend", "execution:human"},
+            {"agent:backend", "agent:unknown"},
             set(),
         ):
             with self.subTest(labels=labels), self.assertRaises(ExecutionBlocked):
                 self.runtime.execute(Issue("LOL-57", frozenset(labels)), lambda _: None)
+
+
+class KanbanAdapterTests(unittest.TestCase):
+    def setUp(self):
+        self.context = next_context()
+
+    def test_done_task_maps_metadata_to_execution_result(self):
+        snapshot = KanbanTaskSnapshot(
+            "t_backend",
+            "done",
+            assignee="dev-backend",
+            metadata={
+                "tests_status": "passed",
+                "review_status": "approved",
+                "commit_sha": "abc123",
+                "pull_request_url": "https://github.com/org/repo/pull/1",
+            },
+        )
+        adapter = KanbanDispatcherAdapter(lambda _: snapshot, lambda task_id: snapshot)
+
+        result = adapter(self.context)
+
+        self.assertEqual("passed", result.tests_status)
+        self.assertEqual("approved", result.review_status)
+        self.assertEqual("abc123", result.commit_sha)
+        self.assertEqual("https://github.com/org/repo/pull/1", result.pull_request_url)
+        self.assertEqual("kanban.dispatched", result.events[0][0])
+        self.assertEqual("kanban.completed", result.events[-1][0])
+
+    def test_spawn_is_not_success_until_task_reaches_done(self):
+        snapshots = [
+            KanbanTaskSnapshot("t_backend", "running", assignee="dev-backend"),
+            KanbanTaskSnapshot(
+                "t_backend",
+                "done",
+                assignee="dev-backend",
+                metadata={"tests_status": "passed", "review_status": "approved"},
+            ),
+        ]
+
+        def read_task(_):
+            return snapshots.pop(0)
+
+        adapter = KanbanDispatcherAdapter(
+            lambda _: "t_backend",
+            read_task,
+            poll_seconds=0.01,
+            sleep=lambda _: None,
+            monotonic=fake_monotonic(),
+        )
+
+        result = adapter(self.context)
+
+        self.assertEqual("approved", result.review_status)
+        self.assertTrue(any(event[0] == "kanban.status_changed" for event in result.events))
+
+    def test_blocked_task_returns_gate_missing_result(self):
+        snapshot = KanbanTaskSnapshot("t_backend", "blocked", metadata={"tests_status": "failed"})
+        adapter = KanbanDispatcherAdapter(lambda _: snapshot, lambda task_id: snapshot)
+
+        result = adapter(self.context)
+
+        self.assertEqual("failed", result.tests_status)
+        self.assertIsNone(result.review_status)
+        self.assertEqual("kanban.blocked", result.events[-1][0])
+
+    def test_failed_worker_outcome_raises_before_success(self):
+        snapshot = KanbanTaskSnapshot(
+            "t_backend",
+            "running",
+            latest_run=KanbanRunSnapshot(status="ended", outcome="failed"),
+        )
+        adapter = KanbanDispatcherAdapter(lambda _: snapshot, lambda task_id: snapshot)
+
+        with self.assertRaises(RuntimeError):
+            adapter(self.context)
+
+
+def next_context():
+    return ExecutionContext("run_01M3A9VMVX4JFQ6CP7ZPWRKM8K", "LOL-56", "dev-backend", "medium", "auto", "local")
+
+
+def fake_monotonic():
+    value = {"now": 0.0}
+
+    def tick():
+        value["now"] += 0.01
+        return value["now"]
+
+    return tick
 
 
 if __name__ == "__main__":

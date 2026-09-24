@@ -5,7 +5,7 @@ begin;
 create or replace function public.hermes_claim_run(
   p_run_id text, p_issue_id text, p_agent text, p_risk text,
   p_mode text, p_environment text, p_ttl_seconds integer
-) returns void language plpgsql security invoker set search_path = '' as $$
+) returns boolean language plpgsql security invoker set search_path = '' as $$
 begin
   if p_ttl_seconds < 10 or p_ttl_seconds > 86400 then
     raise exception 'Invalid lock TTL';
@@ -14,14 +14,28 @@ begin
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_issue_id, 0));
   insert into public.agent_runs
     (run_id, linear_issue_id, agent, status, risk, execution_mode, environment)
-  values (p_run_id, p_issue_id, p_agent, 'running', p_risk, p_mode, p_environment);
-  insert into public.agent_execution_locks
-    (linear_issue_id, run_id, agent, expires_at)
-  values (p_issue_id, p_run_id, p_agent, pg_catalog.now() + pg_catalog.make_interval(secs => p_ttl_seconds));
+  values (p_run_id, p_issue_id, p_agent, 'queued', p_risk, p_mode, p_environment);
+  begin
+    insert into public.agent_execution_locks
+      (linear_issue_id, run_id, agent, expires_at)
+    values (p_issue_id, p_run_id, p_agent, pg_catalog.now() + pg_catalog.make_interval(secs => p_ttl_seconds));
+  exception when unique_violation then
+    update public.agent_runs set status = 'failed', finished_at = pg_catalog.now(), error = 'RunConflict'
+    where run_id = p_run_id and linear_issue_id = p_issue_id;
+    insert into public.agent_events (run_id, linear_issue_id, agent, event_type, payload)
+    values (p_run_id, p_issue_id, p_agent, 'lock.rejected',
+            pg_catalog.jsonb_build_object('reason', 'RunConflict')),
+           (p_run_id, p_issue_id, p_agent, 'run.failed',
+            pg_catalog.jsonb_build_object('error', 'RunConflict'));
+    return false;
+  end;
+  update public.agent_runs set status = 'running', heartbeat_at = pg_catalog.now()
+  where run_id = p_run_id and linear_issue_id = p_issue_id;
   insert into public.agent_events (run_id, linear_issue_id, agent, event_type)
   values (p_run_id, p_issue_id, p_agent, 'run.created'),
          (p_run_id, p_issue_id, p_agent, 'lock.acquired'),
          (p_run_id, p_issue_id, p_agent, 'run.started');
+  return true;
 end;
 $$;
 

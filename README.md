@@ -37,6 +37,12 @@ runtime.execute(
 )
 ```
 
+For Hermes Kanban workers, keep the installed dispatcher as the owner of task
+spawn/run bookkeeping and inject it through `KanbanDispatcherAdapter`. The
+adapter treats a spawn as only "dispatched"; it returns an `ExecutionResult`
+only after a read-only task snapshot reaches a terminal outcome with explicit
+`tests_status` and `review_status` metadata.
+
 Call `runtime.recover_expired_issue(issue_id)` from the orchestrator recovery
 loop before trying to claim an expired issue again. A conflict leaves the
 existing run intact. A heartbeat failure triggers a failed-run transition when

@@ -46,7 +46,7 @@ class SupabaseStore:
             raise RuntimeError(f"Supabase request failed (HTTP {exc.code})") from None
 
     def claim(self, context: ExecutionContext, ttl_seconds: int) -> None:
-        self._post("rpc/hermes_claim_run", {
+        result = self._post("rpc/hermes_claim_run", {
             "p_run_id": context.run_id,
             "p_issue_id": context.linear_issue_id,
             "p_agent": context.agent,
@@ -55,6 +55,8 @@ class SupabaseStore:
             "p_environment": context.environment,
             "p_ttl_seconds": ttl_seconds,
         })
+        if result is not True:
+            raise RunConflict("Active run already exists for this issue")
 
     def heartbeat(self, context: ExecutionContext, ttl_seconds: int) -> bool:
         return self._post("rpc/hermes_heartbeat_run", {
