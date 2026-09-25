@@ -14,7 +14,7 @@ import logging
 import time
 from typing import Callable, Mapping, Protocol
 
-from .runtime import ExecutionBlocked, ExecutionContext, ExecutionResult
+from .runtime import ExecutionBlocked, ExecutionContext, ExecutionEventError, ExecutionResult
 
 logger = logging.getLogger(__name__)
 
@@ -122,12 +122,12 @@ class KanbanDispatcherAdapter:
             if latest and latest.outcome in TERMINAL_FAILED_OUTCOMES:
                 events.append((
                     "kanban.failed",
-                    self._event_payload(context, snapshot, outcome=latest.outcome),
+                    self._event_payload(context, snapshot, kanban_outcome=latest.outcome),
                 ))
-                raise RuntimeError("Kanban worker failed before task completion")
+                raise ExecutionEventError("RuntimeError", tuple(events))
             if self._monotonic() >= deadline:
                 events.append(("kanban.timeout", self._event_payload(context, snapshot)))
-                raise TimeoutError("Kanban task did not reach a terminal state in time")
+                raise ExecutionEventError("TimeoutError", tuple(events))
             self._sleep(self._poll_seconds)
             snapshot = self._read_task(task_id)
             if snapshot.status != last_status:

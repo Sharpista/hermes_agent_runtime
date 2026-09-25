@@ -8,6 +8,7 @@ from typing import Mapping
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from .payloads import validate_event_payload
 from .runtime import ExecutionContext, RunConflict
 
 
@@ -65,12 +66,13 @@ class SupabaseStore:
         }) is True
 
     def event(self, context: ExecutionContext, kind: str, payload: Mapping[str, object]) -> None:
+        normalized_payload = validate_event_payload(kind, payload)
         self._post("agent_events", {
             "run_id": context.run_id,
             "linear_issue_id": context.linear_issue_id,
             "agent": context.agent,
             "event_type": kind,
-            "payload": dict(payload),
+            "payload": normalized_payload,
         })
 
     def finish(self, context: ExecutionContext, status: str, fields: Mapping[str, object]) -> None:
