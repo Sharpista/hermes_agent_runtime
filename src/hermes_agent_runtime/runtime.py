@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import json
 import secrets
 from threading import Event, Thread
 from typing import Callable, Mapping, Protocol, runtime_checkable
+
+from .payloads import validate_event_payload
 
 
 ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -34,6 +37,15 @@ class RunConflict(Exception):
 
 class ExecutionBlocked(Exception):
     """Issue classification or policy requires orchestrator intervention."""
+
+
+class ExecutionEventError(RuntimeError):
+    """Dispatch failed after observing events that must be persisted first."""
+
+    def __init__(self, error_type: str, events: tuple[tuple[str, Mapping[str, object]], ...]):
+        super().__init__(error_type)
+        self.error_type = error_type
+        self.events = events
 
 
 @dataclass(frozen=True)
@@ -141,14 +153,13 @@ class AgentRuntime:
         try:
             if move_status:
                 move_status(issue.identifier, "In Progress")
-            self.store.event(context, "agent.dispatched", {})
+            self.store.event(context, "agent.dispatched", validate_event_payload("agent.dispatched", {}))
             result = dispatch(context)
             stop.set()
             worker.join()
+            self._persist_events(context, result.events)
             if heartbeat_errors:
                 raise RuntimeError("Heartbeat failed; execution outcome requires review")
-            for kind, payload in result.events:
-                self.store.event(context, kind, payload)
             if agent in {"dev-backend", "dev-frontend", "devops"} and (
                 result.tests_status != "passed" or result.review_status != "approved"
             ):
@@ -161,9 +172,16 @@ class AgentRuntime:
         except Exception as exc:
             stop.set()
             worker.join()
+            finish_error: BaseException = exc
+            if isinstance(exc, ExecutionEventError):
+                try:
+                    self._persist_events(context, exc.events)
+                except Exception as event_exc:
+                    finish_error = event_exc
             # Keep error text out of operational tables: downstream exceptions can contain tokens.
-            status = "blocked" if isinstance(exc, ExecutionBlocked) else "failed"
-            self.store.finish(context, status, {"error": type(exc).__name__})
+            status = "blocked" if isinstance(finish_error, ExecutionBlocked) else "failed"
+            error_type = exc.error_type if isinstance(exc, ExecutionEventError) and finish_error is exc else type(finish_error).__name__
+            self.store.finish(context, status, {"error": error_type, "error_code": error_type})
             raise
         finally:
             stop.set()
@@ -172,3 +190,23 @@ class AgentRuntime:
     def recover_expired_issue(self, issue_id: str) -> bool:
         """Orchestrator-only operation; the SQL function checks expiry under row lock."""
         return self.store.recover(issue_id)
+
+    def _persist_events(self, context: ExecutionContext, events: tuple[tuple[str, Mapping[str, object]], ...]) -> None:
+        seen: set[tuple[object, ...]] = set()
+        normalized_events: list[tuple[str, Mapping[str, object]]] = []
+        for kind, payload in events:
+            normalized = validate_event_payload(kind, payload)
+            key = _event_key(kind, normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_events.append((kind, normalized))
+        for kind, normalized in normalized_events:
+            self.store.event(context, kind, normalized)
+
+
+def _event_key(kind: str, payload: Mapping[str, object]) -> tuple[object, ...]:
+    task_id = payload.get("kanban_task_id")
+    if task_id is not None:
+        return (kind, task_id, payload.get("status"), payload.get("kanban_outcome"))
+    return (kind, json.dumps(dict(payload), sort_keys=True, separators=(",", ":")))
