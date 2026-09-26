@@ -2,6 +2,8 @@ from .kanban import KanbanDispatcherAdapter, KanbanRunSnapshot, KanbanTaskSnapsh
 from .payloads import PayloadValidationError, validate_event_payload
 from .runtime import AgentRuntime, ExecutionContext, ExecutionEventError, ExecutionResult, Issue, RunConflict
 from .supabase import SupabaseStore
+from .linear import LinearClient, LinearIssue
+from .orchestrator import Orchestrator, StageRequest
 
 __all__ = [
     "AgentRuntime",
@@ -15,5 +17,9 @@ __all__ = [
     "PayloadValidationError",
     "RunConflict",
     "SupabaseStore",
+    "LinearClient",
+    "LinearIssue",
+    "Orchestrator",
+    "StageRequest",
     "validate_event_payload",
 ]
