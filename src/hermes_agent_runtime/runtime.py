@@ -17,10 +17,12 @@ AGENTS = {
     "agent:orchestrator": "orchestrator",
     "agent:backend": "dev-backend",
     "agent:frontend": "dev-frontend",
+    "agent:database": "dev-database",
     "agent:devops": "devops",
     "agent:qa": "qualidade",
     "agent:review": "code-reviewer",
     "agent:github": "github-profile",
+    "agent:orquestrador": "orchestrator",
 }
 
 
@@ -126,7 +128,8 @@ class AgentRuntime:
         return AGENTS[next(iter(agents))], risk, mode, environment
 
     def execute(self, issue: Issue, dispatch: Callable[[ExecutionContext], ExecutionResult],
-                *, move_status: Callable[[str, str], None] | None = None) -> ExecutionContext:
+                *, move_status: Callable[[str, str], None] | None = None,
+                require_gates: bool = True, move_to_review: bool = True) -> ExecutionContext:
         agent, risk, mode, environment = self.classify(issue)
         context = ExecutionContext(new_run_id(), issue.identifier, agent, risk, mode, environment)
         # One database transaction inserts the run and lock. A conflict creates no orphan run.
@@ -160,11 +163,11 @@ class AgentRuntime:
             self._persist_events(context, result.events)
             if heartbeat_errors:
                 raise RuntimeError("Heartbeat failed; execution outcome requires review")
-            if agent in {"dev-backend", "dev-frontend", "devops"} and (
+            if require_gates and agent in {"dev-backend", "dev-frontend", "dev-database", "devops"} and (
                 result.tests_status != "passed" or result.review_status != "approved"
             ):
                 raise ExecutionBlocked("Required test and review gates are incomplete")
-            if move_status:
+            if move_status and move_to_review:
                 move_status(issue.identifier, "In Review")
             # Dispatcher must supply QA/review results; this boundary never marks Linear Done.
             self.store.finish(context, "completed", result.fields())

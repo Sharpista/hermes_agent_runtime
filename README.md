@@ -3,10 +3,10 @@
 Reusable server-side execution lifecycle for Linear issues backed by the existing
 LoLCoach Supabase tables (`agent_runs`, `agent_execution_locks`, `agent_events`).
 
-This repository contains a runtime boundary, **not** the installed Hermes dispatcher.
-The caller supplies a dispatcher callback and, optionally, a Linear status callback.
-It does not poll Linear, create GitHub PRs, deploy to Railway, or mark issues Done.
-Wire those steps into the installed orchestrator after its source is available.
+This repository contains a runtime boundary and a server-side Linear coordinator.
+The coordinator polls `Todo` issues, routes `agent:*` labels, claims a Supabase
+run/lock for each stage, and delegates to a caller-supplied Hermes Kanban bridge.
+It does not replace the installed dispatcher, perform deploys, or mark issues Done.
 
 ## Setup
 
@@ -63,3 +63,40 @@ python -m compileall -q src
 The tests use an in-memory store and do not touch the live Supabase project.
 Before production use, test the SQL migration and two concurrent claims in a
 development database, then verify expiry recovery and service-role-only access.
+
+## Operational coordinator
+
+The CLI requires `LINEAR_API_KEY`, `SUPABASE_URL`, and
+`SUPABASE_SERVICE_ROLE_KEY` in the server process environment. For polling,
+also set `LINEAR_TEAM_ID` or pass `--team-id`. The `--adapter` value names a
+Python callable in the **installed Hermes environment**:
+
+```sh
+python -m hermes_agent_runtime --team-id YOUR_TEAM_UUID \
+  --adapter hermes_bridge:dispatch_stage --interval 30
+```
+
+`dispatch_stage(request: StageRequest) -> ExecutionResult` must hand a task to
+the installed Hermes profile dispatcher, retain `request.context.run_id`, and
+wait for its final Kanban snapshot. The existing `KanbanDispatcherAdapter` can
+perform the waiting when given real `start` and `read_task` callbacks. Each
+request contains the Linear issue, agent, stage and candidate SHA. Do not return
+success based on spawn alone. The stages are `implement`, `candidate_commit`,
+`quality`, `review`, and `publish_pr`. For absent or multiple `agent:*` labels,
+the `classify` stage goes to `orchestrator`; a specialist-only issue uses
+`specialist` and remains pending human/orchestrator review.
+The installed Hermes profile is called `orquestrador`; map the runtime alias
+`orchestrator` to that profile in the bridge.
+
+Publication requires an explicit process flag (`--allow-pr-publish`), which
+must only be used for an authorized scope. Even after PR creation the Linear
+issue remains `In Review`: CI, acceptance and any deployment are separate
+gates. Production issues, critical risk, and human execution labels are
+blocked by the runtime. The coordinator never deploys to Railway.
+
+The live Hermes bridge is not included because the installed v0.21.2 dispatcher
+and Kanban SQLite schema are outside this repository. A server deployment must
+provide the callable and test it against the installed CLI/board contract.
+An interrupted sequence after `In Progress` requires reconciliation of its
+recorded runs and candidate SHA before resuming; the poller only starts new
+`Todo` issues. Do not manually reset it to `Todo` without that reconciliation.
