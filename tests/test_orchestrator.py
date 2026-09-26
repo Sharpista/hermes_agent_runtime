@@ -88,6 +88,31 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual("blocked", self.store.finished[-1][1])
         self.assertFalse(self.store.active)
 
+    def test_review_rework_creates_new_sha_and_rechecks(self):
+        corrected = "b" * 40
+        count = 0
+        def dispatch(request):
+            nonlocal count
+            self.calls.append(request)
+            if request.stage == "candidate_commit":
+                count += 1
+                return ExecutionResult(commit_sha=SHA if count == 1 else corrected)
+            if request.stage == "quality":
+                return ExecutionResult(commit_sha=request.candidate_sha, tests_status="passed")
+            if request.stage == "review":
+                return ExecutionResult(commit_sha=request.candidate_sha,
+                                       review_status="changes_requested" if count == 1 else "approved")
+            if request.stage == "publish_pr":
+                return ExecutionResult(commit_sha=request.candidate_sha,
+                                       pull_request_url="https://github.com/a/b/pull/2")
+            return ExecutionResult()
+        self.assertEqual("https://github.com/a/b/pull/2", self.coordinator(dispatch).execute("LOL-1"))
+        self.assertEqual(["implement", "candidate_commit", "quality", "review", "rework",
+                          "candidate_commit", "quality", "review", "publish_pr"],
+                         [call.stage for call in self.calls])
+        self.assertEqual(corrected, self.calls[-1].candidate_sha)
+        self.assertEqual(["In Progress", "In Review"], self.linear.statuses)
+
     def test_no_label_goes_to_orchestrator(self):
         self.linear = Linear(frozenset())
         self.assertEqual("awaiting_decomposition", self.coordinator().execute("LOL-1"))

@@ -34,11 +34,15 @@ class Orchestrator:
     """
 
     def __init__(self, linear: LinearGateway, runtime: AgentRuntime,
-                 dispatch: Callable[[StageRequest], ExecutionResult], *, allow_pr_publish: bool = False):
+                 dispatch: Callable[[StageRequest], ExecutionResult], *, allow_pr_publish: bool = False,
+                 max_corrections: int = 2):
+        if max_corrections < 0:
+            raise ValueError("max_corrections must be nonnegative")
         self.linear = linear
         self.runtime = runtime
         self.dispatch = dispatch
         self.allow_pr_publish = allow_pr_publish
+        self.max_corrections = max_corrections
 
     def execute(self, issue_id: str) -> str:
         issue = self.linear.issue(issue_id)
@@ -62,16 +66,19 @@ class Orchestrator:
             return "awaiting_orchestrator_review"
 
         self._stage(issue, agent, "implement", move_to="In Progress")
-        candidate = self._stage(issue, "github-profile", "candidate_commit")
-        sha = candidate.commit_sha
-        if not sha or len(sha) != 40:
-            raise ExecutionBlocked("Candidate commit SHA missing")
-        qa = self._stage(issue, "qualidade", "quality", candidate_sha=sha)
-        if qa.tests_status != "passed" or qa.commit_sha != sha:
-            raise ExecutionBlocked("Quality did not approve candidate SHA")
-        review = self._stage(issue, "code-reviewer", "review", candidate_sha=sha, move_to="In Review")
-        if review.review_status != "approved" or review.commit_sha != sha:
-            raise ExecutionBlocked("Code review did not approve candidate SHA")
+        previous_sha = None
+        for attempt in range(self.max_corrections + 1):
+            candidate = self._stage(issue, "github-profile", "candidate_commit", candidate_sha=previous_sha)
+            sha = candidate.commit_sha
+            try:
+                self._stage(issue, "qualidade", "quality", candidate_sha=sha)
+                self._stage(issue, "code-reviewer", "review", candidate_sha=sha, move_to="In Review")
+                break
+            except ExecutionBlocked:
+                if attempt == self.max_corrections:
+                    raise
+                self._stage(issue, agent, "rework", candidate_sha=sha)
+                previous_sha = sha
         if not self.allow_pr_publish:
             raise ExecutionBlocked("PR publication needs explicit authorization")
         published = self._stage(issue, "github-profile", "publish_pr", candidate_sha=sha)
@@ -94,6 +101,8 @@ class Orchestrator:
                 raise TypeError("Hermes dispatcher must return ExecutionResult")
             if stage == "candidate_commit" and not _valid_sha(result.commit_sha):
                 raise ExecutionBlocked("Candidate commit SHA missing")
+            if stage == "candidate_commit" and candidate_sha == result.commit_sha:
+                raise ExecutionBlocked("Rework must produce a new candidate SHA")
             if stage == "quality" and (result.tests_status != "passed" or result.commit_sha != candidate_sha):
                 raise ExecutionBlocked("Quality did not approve candidate SHA")
             if stage == "review" and (result.review_status != "approved" or result.commit_sha != candidate_sha):

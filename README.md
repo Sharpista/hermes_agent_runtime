@@ -87,6 +87,9 @@ the `classify` stage goes to `orchestrator`; a specialist-only issue uses
 `specialist` and remains pending human/orchestrator review.
 The installed Hermes profile is called `orquestrador`; map the runtime alias
 `orchestrator` to that profile in the bridge.
+Failed QA or requested review changes return to the implementing profile via
+`rework`, then require a new candidate commit and fresh QA/review on its SHA.
+The default limit is two correction rounds; an exhausted loop stays blocked.
 
 Publication requires an explicit process flag (`--allow-pr-publish`), which
 must only be used for an authorized scope. Even after PR creation the Linear
