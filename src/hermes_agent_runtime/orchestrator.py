@@ -18,6 +18,8 @@ class StageRequest:
     issue: LinearIssue
     stage: str
     candidate_sha: str | None = None
+    workspace_path: str | None = None
+    branch: str | None = None
 
 
 class LinearGateway(Protocol):
@@ -43,8 +45,12 @@ class Orchestrator:
         self.dispatch = dispatch
         self.allow_pr_publish = allow_pr_publish
         self.max_corrections = max_corrections
+        self._workspace_path: str | None = None
+        self._branch: str | None = None
 
     def execute(self, issue_id: str) -> str:
+        self._workspace_path = None
+        self._branch = None
         issue = self.linear.issue(issue_id)
         if issue.status != "Todo":
             raise ExecutionBlocked("Issue must be Todo to begin")
@@ -96,9 +102,14 @@ class Orchestrator:
 
         def run(context: ExecutionContext) -> ExecutionResult:
             nonlocal result
-            result = self.dispatch(StageRequest(context, issue, stage, candidate_sha))
+            result = self.dispatch(StageRequest(context, issue, stage, candidate_sha,
+                                                self._workspace_path, self._branch))
             if not isinstance(result, ExecutionResult):
                 raise TypeError("Hermes dispatcher must return ExecutionResult")
+            if result.task_status != "done":
+                raise ExecutionBlocked("Hermes task did not complete")
+            if self._workspace_path and result.workspace_path and result.workspace_path != self._workspace_path:
+                raise ExecutionBlocked("Stage changed workspace")
             if stage == "candidate_commit" and not _valid_sha(result.commit_sha):
                 raise ExecutionBlocked("Candidate commit SHA missing")
             if stage == "candidate_commit" and candidate_sha == result.commit_sha:
@@ -117,6 +128,10 @@ class Orchestrator:
         if move_to == "In Review":
             self.linear.move(issue, "In Review")
         assert result is not None
+        if result.workspace_path:
+            self._workspace_path = result.workspace_path
+        if result.branch:
+            self._branch = result.branch
         return result
 
 

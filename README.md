@@ -97,9 +97,30 @@ issue remains `In Review`: CI, acceptance and any deployment are separate
 gates. Production issues, critical risk, and human execution labels are
 blocked by the runtime. The coordinator never deploys to Railway.
 
-The live Hermes bridge is not included because the installed v0.21.2 dispatcher
-and Kanban SQLite schema are outside this repository. A server deployment must
-provide the callable and test it against the installed CLI/board contract.
-An interrupted sequence after `In Progress` requires reconciliation of its
-recorded runs and candidate SHA before resuming; the poller only starts new
-`Todo` issues. Do not manually reset it to `Todo` without that reconciliation.
+## Hermes v0.21.5 bridge
+
+`hermes_agent_runtime.hermes_bridge:dispatch_stage` uses the installed Kanban
+CLI and the board's task/run JSON. It does not spawn workers itself. Configure
+`HERMES_KANBAN_BOARD=lolcoach`, `HERMES_KANBAN_PROJECT=<Hermes project slug>`
+and `HERMES_GITHUB_REPOSITORY=OWNER/REPO` for the relevant project. The first
+implementation card gets a project worktree; subsequent stages reuse the
+verified `workspace_path` and branch from that card. Ensure the Hermes gateway
+already owns dispatch on this board; do not run a second daemon. Verify the
+project slug with `hermes project list` on the server before activation.
+
+Start with one authorized `Todo` test issue and the matching server-side
+secrets, then inspect `hermes kanban --board lolcoach show <task_id> --json`
+and the Supabase run timeline. After successful smoke, configure the polling
+process under your existing service manager:
+
+```sh
+python -m hermes_agent_runtime --issue LOL-TEST \
+  --adapter hermes_agent_runtime.hermes_bridge:dispatch_stage \
+  --allow-pr-publish
+```
+
+The bridge contract is based on Hermes v0.21.5 (`a7059225`). It has unit tests
+using the exact documented JSON field names, but has not yet been exercised on
+the user's VPS. An interrupted sequence after `In Progress` requires
+reconciliation of recorded runs and candidate SHA before resuming; the poller
+only starts new `Todo` issues. Do not reset an issue to `Todo` blindly.

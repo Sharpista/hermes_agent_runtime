@@ -147,6 +147,7 @@ class KanbanDispatcherAdapter:
         if snapshot.status in TERMINAL_BLOCKED_STATUSES:
             events.append(("kanban.blocked", self._event_payload(context, snapshot)))
             return ExecutionResult(
+                task_status="blocked",
                 tests_status=_string_field(snapshot.metadata, "tests_status"),
                 review_status=_string_field(snapshot.metadata, "review_status"),
                 events=tuple(events),
@@ -157,6 +158,9 @@ class KanbanDispatcherAdapter:
             fields = {**_result_fields(snapshot.latest_run.metadata), **fields}
         events.append(("kanban.completed", self._event_payload(context, snapshot, **fields)))
         return ExecutionResult(
+            task_status=snapshot.status,
+            workspace_path=snapshot.workspace_path,
+            branch=snapshot.branch,
             commit_sha=fields.get("commit_sha"),
             pull_request_url=fields.get("pull_request_url"),
             railway_deployment_id=fields.get("railway_deployment_id"),

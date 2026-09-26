@@ -69,6 +69,9 @@ class ExecutionContext:
 
 @dataclass(frozen=True)
 class ExecutionResult:
+    task_status: str = "done"
+    workspace_path: str | None = None
+    branch: str | None = None
     commit_sha: str | None = None
     pull_request_url: str | None = None
     railway_deployment_id: str | None = None

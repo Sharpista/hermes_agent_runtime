@@ -141,6 +141,12 @@ class OrchestratorTests(unittest.TestCase):
             self.coordinator().execute("LOL-1")
         self.assertFalse(self.calls)
 
+    def test_blocked_implementation_stops_before_commit(self):
+        with self.assertRaises(ExecutionBlocked):
+            self.coordinator(lambda _: ExecutionResult(task_status="blocked")).execute("LOL-1")
+        self.assertEqual(["In Progress"], self.linear.statuses)
+        self.assertEqual("blocked", self.store.finished[-1][1])
+
 
 if __name__ == "__main__":
     unittest.main()
