@@ -12,6 +12,9 @@ from hermes_agent_runtime.supabase import SupabaseStore
 from hermes_agent_runtime.kanban import (
     KanbanDispatcherAdapter, KanbanRunSnapshot, KanbanTaskSnapshot,
 )
+from hermes_agent_runtime.orchestrator import RuntimeOrchestrator
+from hermes_agent_runtime.poller import LinearIssuePoller
+from hermes_agent_runtime.selector import LinearIssueSelector, LinearIssueSnapshot
 
 
 class MemoryStore:
@@ -290,6 +293,100 @@ class KanbanAdapterTests(unittest.TestCase):
             adapter(self.context)
         self.assertEqual("TimeoutError", raised.exception.error_type)
         self.assertEqual("kanban.timeout", raised.exception.events[-1][0])
+
+
+class OrchestratorChainTests(unittest.TestCase):
+    def test_selector_blocks_invalid_linear_issue_without_eligible_spawn(self):
+        selector = LinearIssueSelector()
+
+        decision = selector.select(LinearIssueSnapshot(
+            "LOL-68",
+            "Todo",
+            frozenset({"agent:backend", "agent:frontend", "execution:auto", "risk:medium", "env:local"}),
+        ))
+
+        self.assertEqual("blocked", decision.action)
+        self.assertFalse(decision.eligible)
+
+    def test_poller_records_invalid_issue_and_returns_only_eligible(self):
+        blocked = []
+        poller = LinearIssuePoller(lambda: (
+            LinearIssueSnapshot("LOL-68", "Todo", frozenset({"agent:backend", "env:production"})),
+            LinearIssueSnapshot("LOL-69", "Todo", frozenset({"agent:backend", "execution:auto", "risk:medium", "env:local"})),
+            LinearIssueSnapshot("LOL-70", "In Progress", frozenset({"agent:backend"})),
+        ), record_blocked=lambda issue_id, reason: blocked.append((issue_id, reason)))
+
+        decisions = poller.poll()
+
+        self.assertEqual(["LOL-68"], [issue_id for issue_id, _ in blocked])
+        self.assertEqual(["LOL-69"], [decision.issue.identifier for decision in decisions])
+        self.assertEqual("dev-backend", decisions[0].assignee)
+
+    def test_runtime_orchestrator_recovers_then_dispatches_with_run_context_and_status_callback(self):
+        store = MemoryStore()
+        runtime = AgentRuntime(store)
+        poller = LinearIssuePoller(lambda: (
+            LinearIssueSnapshot("LOL-69", "Todo", frozenset({"agent:backend", "execution:auto", "risk:medium", "env:local"})),
+        ))
+        recovered = []
+        statuses = []
+        seen_contexts = []
+
+        def recover(issue_id):
+            recovered.append(issue_id)
+            return False
+
+        store.recover = recover
+
+        def dispatch(context):
+            seen_contexts.append(context)
+            return ExecutionResult(
+                tests_status="passed",
+                review_status="approved",
+                events=(("kanban.dispatched", {"kanban_task_id": "t_backend", "status": "done"}),),
+            )
+
+        orchestrator = RuntimeOrchestrator(
+            runtime,
+            poller,
+            dispatch,
+            move_status=lambda issue_id, status: statuses.append((issue_id, status)),
+        )
+
+        results = orchestrator.run_once()
+
+        self.assertEqual(["LOL-69"], recovered)
+        self.assertEqual("completed", results[0].status)
+        self.assertEqual(results[0].run_id, seen_contexts[0].run_id)
+        self.assertEqual("LOL-69", seen_contexts[0].linear_issue_id)
+        self.assertEqual([("LOL-69", "In Progress"), ("LOL-69", "In Review")], statuses)
+
+    def test_runtime_orchestrator_claim_conflict_does_not_dispatch(self):
+        store = MemoryStore()
+        store.active["LOL-69"] = "run_existing"
+        runtime = AgentRuntime(store)
+        poller = LinearIssuePoller(lambda: (
+            LinearIssueSnapshot("LOL-69", "Todo", frozenset({"agent:backend", "execution:auto"})),
+        ))
+        blocked = []
+        called = []
+
+        def dispatch_unexpected(context):
+            called.append(context)
+            return ExecutionResult()
+
+        orchestrator = RuntimeOrchestrator(
+            runtime,
+            poller,
+            dispatch_unexpected,
+            record_blocked=lambda issue_id, reason: blocked.append((issue_id, reason)),
+        )
+
+        results = orchestrator.run_once()
+
+        self.assertEqual([], called)
+        self.assertEqual("conflict", results[0].status)
+        self.assertEqual([("LOL-69", "RunConflict")], blocked)
 
 
 class PayloadContractTests(unittest.TestCase):
