@@ -3,10 +3,11 @@
 Reusable server-side execution lifecycle for Linear issues backed by the existing
 LoLCoach Supabase tables (`agent_runs`, `agent_execution_locks`, `agent_events`).
 
-This repository contains a runtime boundary, **not** the installed Hermes dispatcher.
-The caller supplies a dispatcher callback and, optionally, a Linear status callback.
-It does not poll Linear, create GitHub PRs, deploy to Railway, or mark issues Done.
-Wire those steps into the installed orchestrator after its source is available.
+This repository contains a runtime boundary plus a small, versioned orchestrator
+chain. The chain covers Linear polling/selection policy and adapter composition;
+the caller still injects the real Linear client, Hermes Kanban dispatcher and
+status callbacks. It does not create GitHub PRs, deploy to Railway, or mark
+issues Done.
 
 ## Setup
 
@@ -42,6 +43,12 @@ spawn/run bookkeeping and inject it through `KanbanDispatcherAdapter`. The
 adapter treats a spawn as only "dispatched"; it returns an `ExecutionResult`
 only after a read-only task snapshot reaches a terminal outcome with explicit
 `tests_status` and `review_status` metadata.
+
+For Linear orchestration, use `LinearIssuePoller` + `LinearIssueSelector` before
+`RuntimeOrchestrator.run_once()`. Invalid `Todo` issues are recorded via an
+injected blocker callback and never reach the dispatch adapter; eligible issues
+call `recover_expired_issue(issue_id)` before `AgentRuntime.execute(...)`,
+preserving `ExecutionContext.run_id` through the injected dispatcher.
 
 Call `runtime.recover_expired_issue(issue_id)` from the orchestrator recovery
 loop before trying to claim an expired issue again. A conflict leaves the

@@ -48,6 +48,38 @@ class ExecutionEventError(RuntimeError):
         self.events = events
 
 
+def classify_issue(issue: "Issue") -> tuple[str, str, str, str]:
+    """Return assignee/risk/mode/environment or raise for unsafe Linear labels."""
+
+    if issue.status != "Todo":
+        raise ExecutionBlocked("Only Todo issues can start a new run")
+    unknown_agent_labels = [label for label in issue.labels if label.startswith("agent:") and label not in AGENTS]
+    if unknown_agent_labels:
+        raise ExecutionBlocked("Unknown agent label")
+    agents = issue.labels.intersection(AGENTS)
+    if len(agents) != 1:
+        raise ExecutionBlocked("Orchestrator must classify missing or ambiguous agent labels")
+
+    def one(prefix: str, default: str) -> str:
+        matches = [label.removeprefix(prefix) for label in issue.labels if label.startswith(prefix)]
+        if len(matches) > 1:
+            raise ExecutionBlocked(f"Conflicting {prefix} labels")
+        return matches[0] if matches else default
+
+    risk = one("risk:", "low")
+    mode = one("execution:", "auto")
+    environment = one("env:", "local")
+    if (
+        risk not in {"low", "medium", "high", "critical"}
+        or mode not in {"auto", "human", "blocked"}
+        or environment not in {"local", "preview", "staging", "production"}
+    ):
+        raise ExecutionBlocked("Unknown operational label")
+    if mode != "auto" or risk == "critical" or environment == "production":
+        raise ExecutionBlocked("This issue requires human intervention")
+    return AGENTS[next(iter(agents))], risk, mode, environment
+
+
 @dataclass(frozen=True)
 class Issue:
     identifier: str
@@ -103,27 +135,7 @@ class AgentRuntime:
         self.heartbeat_seconds = heartbeat_seconds
 
     def classify(self, issue: Issue) -> tuple[str, str, str, str]:
-        if issue.status != "Todo":
-            raise ExecutionBlocked("Only Todo issues can start a new run")
-        unknown_agent_labels = [label for label in issue.labels if label.startswith("agent:") and label not in AGENTS]
-        if unknown_agent_labels:
-            raise ExecutionBlocked("Unknown agent label")
-        agents = issue.labels.intersection(AGENTS)
-        if len(agents) != 1:
-            raise ExecutionBlocked("Orchestrator must classify missing or ambiguous agent labels")
-        def one(prefix: str, default: str) -> str:
-            matches = [label.removeprefix(prefix) for label in issue.labels if label.startswith(prefix)]
-            if len(matches) > 1:
-                raise ExecutionBlocked(f"Conflicting {prefix} labels")
-            return matches[0] if matches else default
-        risk = one("risk:", "low")
-        mode = one("execution:", "auto")
-        environment = one("env:", "local")
-        if risk not in {"low", "medium", "high", "critical"} or mode not in {"auto", "human", "blocked"} or environment not in {"local", "preview", "staging", "production"}:
-            raise ExecutionBlocked("Unknown operational label")
-        if mode != "auto" or risk == "critical" or environment == "production":
-            raise ExecutionBlocked("This issue requires human intervention")
-        return AGENTS[next(iter(agents))], risk, mode, environment
+        return classify_issue(issue)
 
     def execute(self, issue: Issue, dispatch: Callable[[ExecutionContext], ExecutionResult],
                 *, move_status: Callable[[str, str], None] | None = None) -> ExecutionContext:
