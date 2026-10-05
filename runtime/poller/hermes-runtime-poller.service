@@ -1,0 +1,26 @@
+[Unit]
+Description=Hermes runtime poller (Linear -> AgentRuntime -> Kanban) [LOL-97]
+Documentation=file:/home/alexandre/.hermes/runtime/poller/RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/alexandre/.hermes
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="HERMES_HOME=/home/alexandre/.hermes"
+Environment="HERMES_ROOT=/home/alexandre/.hermes"
+Environment="HERMES_KANBAN_BOARD=lolcoach"
+Environment="POLLER_ENV_FILE=/home/alexandre/.hermes/shared/.env"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/alexandre/.hermes/runtime/poller/run_poller.sh /home/alexandre/.hermes/runtime/poller/poller_tick.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-runtime-poller
+NoNewPrivileges=yes
+PrivateTmp=yes
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=default.target

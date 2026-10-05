@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic tick for the Hermes runtime poller [LOL-97]
+Documentation=file:/home/alexandre/.hermes/runtime/poller/RUNBOOK.md
+
+[Timer]
+Unit=hermes-runtime-poller.service
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=5
+Persistent=false
+
+[Install]
+WantedBy=timers.target
