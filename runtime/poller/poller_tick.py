@@ -33,7 +33,7 @@ sys.path.insert(0, str(POLLER_DIR))
 import poller_dispatch_guard as guard  # noqa: E402
 import poller_env  # noqa: E402
 from smoke_lib import (  # noqa: E402  (validated clients from LOL-80)
-    Linear, STATE_IN_PROGRESS, STATE_IN_REVIEW, now_iso,
+    Linear, STATE_BLOCKED, STATE_IN_PROGRESS, STATE_IN_REVIEW, now_iso,
 )
 
 BOARD = os.environ.get("HERMES_KANBAN_BOARD", "lolcoach")
@@ -47,6 +47,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("runtime-poller")
 
 MAX_DISPATCH_PER_TICK = guard.DEFAULT_MAX_DISPATCH_PER_TICK
+LINEAR_STATUS_STATES = {
+    "In Progress": STATE_IN_PROGRESS,
+    "In Review": STATE_IN_REVIEW,
+}
+if STATE_BLOCKED:
+    LINEAR_STATUS_STATES["Blocked"] = STATE_BLOCKED
 
 TODO_ISSUES_QUERY = """
 query($team: String!) {
@@ -74,6 +80,19 @@ def read_issues():
 
 def record_blocked(issue_id: str, reason: str) -> None:
     log.warning("BLOCKED %s: %s", issue_id, reason)
+
+
+def move_issue_status(linear: Linear, issues_by_id: dict[str, dict], identifier: str, status: str) -> None:
+    target = issues_by_id.get(identifier)
+    if target is None:
+        log.warning("move_status: unknown issue %s (ignored)", identifier)
+        return
+    state_id = LINEAR_STATUS_STATES.get(status)
+    if state_id is None:
+        log.warning("move_status: unmapped %r for %s (ignored)", status, identifier)
+        return
+    log.info("move_status %s -> %s", identifier, status)
+    linear.set_state(target["id"], state_id)
 
 
 def _resolve_bound() -> int:
@@ -239,16 +258,7 @@ def main() -> int:
         issues_by_id[n["identifier"]] = n
 
     def move(identifier: str, status: str) -> None:
-        target = issues_by_id.get(identifier)
-        if target is None:
-            log.warning("move_status: unknown issue %s (ignored)", identifier)
-            return
-        state_id = {"In Progress": STATE_IN_PROGRESS, "In Review": STATE_IN_REVIEW}.get(status)
-        if state_id is None:
-            log.warning("move_status: unmapped %r for %s (ignored)", status, identifier)
-            return
-        log.info("move_status %s -> %s", identifier, status)
-        lin.set_state(target["id"], state_id)
+        move_issue_status(lin, issues_by_id, identifier, status)
 
     runtime = AgentRuntime(
         SupabaseStore.from_environment(), ttl_seconds=CLAIM_TTL_SECONDS, heartbeat_seconds=HEARTBEAT_SECONDS,

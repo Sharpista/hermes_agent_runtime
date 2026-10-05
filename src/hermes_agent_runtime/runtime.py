@@ -193,6 +193,10 @@ class AgentRuntime:
             # Keep error text out of operational tables: downstream exceptions can contain tokens.
             status = "blocked" if isinstance(finish_error, ExecutionBlocked) else "failed"
             error_type = exc.error_type if isinstance(exc, ExecutionEventError) and finish_error is exc else type(finish_error).__name__
+            if status == "blocked" and move_status:
+                move_status(issue.identifier, "Blocked")
+            # tasks.result (board local) and agent_runs.error (Supabase) are parallel records;
+            # final integration belongs to the Kanban card. See ORCHESTRATOR.md §Rastreabilidade Linear.
             self.store.finish(context, status, {"error": error_type, "error_code": error_type})
             raise
         finally:

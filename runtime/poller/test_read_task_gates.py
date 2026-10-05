@@ -23,6 +23,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 POLLER_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(POLLER_DIR))
@@ -130,6 +131,20 @@ def main() -> int:
         f"tests={res_blocked.tests_status} review={res_blocked.review_status}",
     )
     check("chain_blocked_event", res_blocked.events[-1][0] == "kanban.blocked", res_blocked.events[-1][0])
+
+    linear = Mock()
+    original_blocked_state = poller_tick.LINEAR_STATUS_STATES.get("Blocked")
+    poller_tick.LINEAR_STATUS_STATES["Blocked"] = "linear_blocked_state_id"
+    poller_tick.move_issue_status(linear, {"LOL-TEST": {"id": "linear_issue_id"}}, "LOL-TEST", "Blocked")
+    if original_blocked_state is None:
+        del poller_tick.LINEAR_STATUS_STATES["Blocked"]
+    else:
+        poller_tick.LINEAR_STATUS_STATES["Blocked"] = original_blocked_state
+    check(
+        "blocked_terminal_translates_to_linear_blocked",
+        linear.set_state.call_args_list == [(('linear_issue_id', 'linear_blocked_state_id'),)],
+        str(linear.set_state.call_args_list),
+    )
 
     failed = [label for label, ok, _ in checks if not ok]
     print(f"RESULT: {'PASS' if not failed else 'FAIL'} ({len(checks) - len(failed)}/{len(checks)} checks)")
