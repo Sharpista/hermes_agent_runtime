@@ -7,12 +7,17 @@ merge ou alteração de secrets foi executado. Depende de LOL-78 (cadeia version
 commit `dc3f7df`, aprovada por QA `t_e800924c` e review `t_32271fcc`).
 
 > **Atualização LOL-97 / t_a4d0e749 (unit permanente, follow-up pós-merge):** a cadeia foi
-> publicada e mergeada em `origin/main` @ **`ade1218`** (PR #5). O entrypoint foi estabilizado
+> publicada e mergeada em `origin/main` (PR #5, `ade1218`). O entrypoint foi estabilizado
 > (§10): interpreter resolvido por `facts.json` (sobrevive a `hermes update`), cadeia fixada no
-> commit mergeado extraído read-only em `~/.hermes/runtime/chain/ade1218` (sem dependência do
+> commit mergeado extraído read-only sob `~/.hermes/runtime/chain/` (sem dependência do
 > worktree volátil), `HERMES_HOME` explícito e uma unit systemd permanente (service + timer),
 > preparada mas **não habilitada/iniciada**. As seções §1–§9 abaixo são o registro histórico da
 > LOL-79 e permanecem válidas; o canário read-only é `run_poller.sh --canary`.
+>
+> **Atualização LOL-116/LOL-117 / t_d8f3d0ff (re-pin):** a cadeia passou a apontar para o merge
+> **`477b28e4`** (PR #7) extraído read-only em `~/.hermes/runtime/chain/477b28e4`; `CHAIN_PIN`,
+> `CHAIN_ROOT`, `canary_readonly.py` e `gen_pin.py` foram alinhados a esse commit e o `PIN.json`
+> foi regerado (ver §10.11).
 
 Host `vmi3571330`, 2026-10-03, Linux 6.8.0-139-generic.
 
@@ -199,13 +204,13 @@ secret alterado, nenhuma produção iniciada.
 
 ### 10.1 Cadeia fixada no commit mergeado
 
-`origin/main` @ `ade12189336abf5d28d1c9b1a8ada823577bf834` (merge do PR #5). `git diff
-dc3f7df..ade1218 -- src` é vazio, ou seja o código mergeado é idêntico ao aprovado. Extração
+`origin/main` @ `477b28ede946a6bff5ae562339e31b999015518e` (merge do PR #7, que traz o
+contrato `Blocked` do LOL-112/113; a versão anterior era `ade1218` = merge do PR #5). Extração
 **read-only** (sem `.git`, sem alterar o repositório) em:
 
-    /home/alexandre/.hermes/runtime/chain/ade1218/
+    /home/alexandre/.hermes/runtime/chain/477b28e4/
       src/            # PYTHONPATH da cadeia
-      tests/          # suíte da cadeia (27 testes) para o canário
+      tests/          # suíte da cadeia (28 testes) para o canário
       PIN.json        # commit + sha256 de cada arquivo (gerado por gen_pin.py)
 
 Regenerar após uma publicação nova:
@@ -289,7 +294,7 @@ executar um tick.
     rm -f ~/.config/systemd/user/hermes-runtime-poller.{service,timer}
     systemctl --user daemon-reload
     # artefatos do card (opcional):
-    rm -rf ~/.hermes/runtime/chain/ade1218
+    rm -rf ~/.hermes/runtime/chain/477b28e4   # (e, se sobrar, ~/.hermes/runtime/chain/ade1218)
     rm -rf ~/.hermes/runtime/evidence/t_a4d0e749
 
 Nada foi instalado por `pip`, nenhum serviço ficou habilitado, o repositório
@@ -377,4 +382,20 @@ Contagens: in-fence **36/36 + 2 skips**, out-of-fence **41/41**. Regressões
 **Rollback** da correção: repor a linha antiga
 `from hermes_agent_runtime import ExecutionBlocked` (volta o `ImportError`) e remover a
 seção de `start()` do `test_poller_dispatch_guard.py`. Não afeta a unit nem a cadeia.
+
+### 10.11 Re-pin da cadeia para o merge `477b28e4` (LOL-116/LOL-117 / t_d8f3d0ff)
+
+**Motivo.** O merge do PR #7 (`477b28e4`, contrato `Blocked` do LOL-112/113) alterou
+`src/hermes_agent_runtime/{runtime,kanban}.py` e `tests/test_runtime.py`, mas os artefatos
+vivos foram editados in-place antes do merge, deixando o `PIN.json` (ainda `ade1218`) em
+desacordo com os bytes em disco → canário `FAIL 15/16` (`chain_pin_files`).
+
+**Ação (host).** Extração read-only de `477b28e4` para `~/.hermes/runtime/chain/477b28e4`,
+`gen_pin.py` regerado (PIN honesto: `commit=477b28e4`), e os defaults de `run_poller.sh`/
+`canary_readonly.py` alinhados a `477b28e4`. A extração original `chain/ade1218` foi mantida
+como rollback. Canário out-of-fence com `POLLER_CANARY_NETWORK=1` → **PASS 17/17**.
+
+**Rollback.** Repor `chain/ade1218` como `CHAIN_ROOT`/`CHAIN_PIN` (constantes nos scripts) e
+regerar o `PIN.json` daquele commit (`COMMIT=ade1218…`), ou reexecutar `gen_pin.py` no
+snapshot antigo. `run_poller.sh <script>` volta a importar a cadeia anterior.
 

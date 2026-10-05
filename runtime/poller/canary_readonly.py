@@ -5,7 +5,7 @@ Proves the *prepared* unit would work, without mutating anything:
   1. interpreter resolved by run_poller.sh is the install venv (python 3.14.x);
   2. HERMES_HOME is the explicit shared root;
   3. the chain import set resolves from the pinned extraction;
-  4. the pinned chain matches the merged commit ade1218 (files vs PIN.json);
+  4. the pinned chain matches the merged commit 477b28e4 (files vs PIN.json);
   5. the board resolves to the shared lolcoach SQLite DB and is readable;
   6. the chain's own unit-test suite passes against the pinned tree;
   7. the prepared unit/timer files are present and well-formed (systemd-analyze);
@@ -27,8 +27,8 @@ import sys
 from pathlib import Path
 
 POLLER_DIR = Path("/home/alexandre/.hermes/runtime/poller")
-CHAIN_ROOT = Path(os.environ.get("CHAIN_ROOT", "/home/alexandre/.hermes/runtime/chain/ade1218"))
-CHAIN_PIN = os.environ.get("CHAIN_PIN", "ade12189336abf5d28d1c9b1a8ada823577bf834")
+CHAIN_ROOT = Path(os.environ.get("CHAIN_ROOT", "/home/alexandre/.hermes/runtime/chain/477b28e4"))
+CHAIN_PIN = os.environ.get("CHAIN_PIN", "477b28ede946a6bff5ae562339e31b999015518e")
 EXPECTED_HOME = "/home/alexandre/.hermes"
 BOARD = os.environ.get("HERMES_KANBAN_BOARD", "lolcoach")
 UNIT_FILES = (
