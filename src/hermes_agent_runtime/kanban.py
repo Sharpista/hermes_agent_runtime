@@ -146,11 +146,10 @@ class KanbanDispatcherAdapter:
 
         if snapshot.status in TERMINAL_BLOCKED_STATUSES:
             events.append(("kanban.blocked", self._event_payload(context, snapshot)))
-            return ExecutionResult(
-                tests_status=_string_field(snapshot.metadata, "tests_status"),
-                review_status=_string_field(snapshot.metadata, "review_status"),
-                events=tuple(events),
-            )
+            fields = {**_result_fields(snapshot.metadata)}
+            if snapshot.latest_run:
+                fields = {**_result_fields(snapshot.latest_run.metadata), **fields}
+            return ExecutionResult(**fields, events=tuple(events))
 
         fields = _result_fields(snapshot.metadata)
         if snapshot.latest_run:

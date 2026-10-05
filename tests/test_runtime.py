@@ -107,6 +107,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual({}, self.store.active)
         self.assertTrue(any(event[1] == "tests.completed" for event in self.store.events))
 
+    def test_blocked_terminal_translates_to_linear_blocked(self):
+        transitions = []
+
+        def move(issue, status):
+            transitions.append((issue, status))
+            self.store.calls.append(("move_status", status))
+
+        with self.assertRaises(ExecutionBlocked):
+            self.runtime.execute(
+                self.issue,
+                lambda _: ExecutionResult(tests_status="passed"),
+                move_status=move,
+            )
+
+        self.assertEqual(1, sum(1 for transition in transitions if transition == ("LOL-56", "Blocked")))
+        self.assertEqual(["In Progress", "Blocked"], [status for _, status in transitions])
+        run_id = next(iter(self.store.runs))
+        self.assertLess(
+            self.store.calls.index(("move_status", "Blocked")),
+            next(index for index, call in enumerate(self.store.calls) if call[0] == "finish"),
+        )
+        self.assertEqual("blocked", self.store.runs[run_id])
+
     def test_deduplicates_accumulated_events_before_finish(self):
         event = ("kanban.dispatched", {"kanban_task_id": "t_backend", "status": "running"})
 
@@ -255,13 +278,21 @@ class KanbanAdapterTests(unittest.TestCase):
         self.assertTrue(any(event[0] == "kanban.status_changed" for event in result.events))
 
     def test_blocked_task_returns_gate_missing_result(self):
-        snapshot = KanbanTaskSnapshot("t_backend", "blocked", metadata={"tests_status": "failed"})
+        snapshot = KanbanTaskSnapshot(
+            "t_backend",
+            "blocked",
+            latest_run=KanbanRunSnapshot(
+                status="blocked",
+                outcome="blocked",
+                metadata={"tests_status": "failed", "review_status": "pending"},
+            ),
+        )
         adapter = KanbanDispatcherAdapter(lambda _: snapshot, lambda task_id: snapshot)
 
         result = adapter(self.context)
 
         self.assertEqual("failed", result.tests_status)
-        self.assertIsNone(result.review_status)
+        self.assertEqual("pending", result.review_status)
         self.assertEqual("kanban.blocked", result.events[-1][0])
 
     def test_failed_worker_outcome_raises_before_success(self):

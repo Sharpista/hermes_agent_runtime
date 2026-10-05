@@ -19,6 +19,7 @@ TEAM_ID = "ddc0d73d-2dcc-413a-89dd-7c840c1bbb4b"
 STATE_TODO = "58e53f4e-216d-4461-abdf-e40dc2a74ddb"
 STATE_IN_PROGRESS = "f7acf339-dc31-433b-8e26-574a2cae1aba"
 STATE_IN_REVIEW = "39604746-b04c-4488-a8b3-2a1bdfbade04"
+STATE_BLOCKED = os.environ.get("POLLER_LINEAR_STATE_BLOCKED", "142dc11e-7d2b-45d6-8122-7f0015d26c7b")
 
 
 def now_iso() -> str:
