@@ -3,14 +3,14 @@
 #
 # One interpreter that imports, together:
 #   * Hermes                (hermes_cli / hermes_cli.kanban_db - the Kanban board API)
-#   * hermes-agent-runtime  (the merged orchestrator chain, origin/main @ ade1218)
+#   * hermes-agent-runtime  (the merged orchestrator chain, origin/main @ 477b28e4)
 #   * the Kanban SQLite API itself
 #
 # Stability decisions (LOL-97 / t_a4d0e749):
 #   * interpreter: resolved dynamically from the pinned install's facts.json
 #     (survives `hermes update` generation bumps), with the LOL-79 path as fallback.
-#   * entrypoint: the chain is pinned to the MERGED commit ade1218 - read-only
-#     extraction under ~/.hermes/runtime/chain/ade1218 - so the unit no longer
+#   * entrypoint: the chain is pinned to the MERGED commit 477b28e4 - read-only
+#     extraction under ~/.hermes/runtime/chain/477b28e4 - so the unit no longer
 #     depends on the volatile worktree /home/alexandre/hermes-agent-runtime/.worktrees/t_0f04a754.
 #   * HERMES_HOME: explicit (the shared root the gateway/dispatcher use), not inferred.
 #
@@ -39,9 +39,9 @@ export HERMES_HOME
 
 HERMES_CHECKOUT="${HERMES_CHECKOUT:-$HERMES_ROOT/hermes-agent}"
 
-# --- pinned chain (merged PR #5 -> origin/main) --------------------------------
-CHAIN_PIN="${CHAIN_PIN:-ade12189336abf5d28d1c9b1a8ada823577bf834}"
-CHAIN_ROOT="${CHAIN_ROOT:-$HERMES_ROOT/runtime/chain/ade1218}"
+# --- pinned chain (merged PR #7 -> origin/main @ 477b28e4) ---------------------
+CHAIN_PIN="${CHAIN_PIN:-477b28ede946a6bff5ae562339e31b999015518e}"
+CHAIN_ROOT="${CHAIN_ROOT:-$HERMES_ROOT/runtime/chain/477b28e4}"
 CHAIN_SRC="${CHAIN_SRC:-$CHAIN_ROOT/src}"
 
 # --- stable interpreter: resolve from the install's facts.json -----------------

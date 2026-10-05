@@ -1,7 +1,7 @@
 """Generate PIN.json for the pinned chain extraction (LOL-97 / t_a4d0e749).
 
 Records the merged commit and a sha256 per file so the read-only canary can prove
-the extraction on disk still matches origin/main @ ade1218 without a .git dir.
+the extraction on disk still matches origin/main @ 477b28e4 without a .git dir.
 """
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-CHAIN_ROOT = Path("/home/alexandre/.hermes/runtime/chain/ade1218")
+CHAIN_ROOT = Path("/home/alexandre/.hermes/runtime/chain/477b28e4")
 REPO = "/home/alexandre/hermes-agent-runtime"
-COMMIT = "ade12189336abf5d28d1c9b1a8ada823577bf834"
+COMMIT = "477b28ede946a6bff5ae562339e31b999015518e"
 
 
 def sha256(path: Path) -> str:
