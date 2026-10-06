@@ -1,0 +1,197 @@
+# Minimal, secret-free CI for hermes_agent_runtime (LOL-120 / t_dbc76972).
+#
+# Scope: static, read-only verification of the repository tree only. No
+# repository secret, no external service, no deploy/tag/release, no branch
+# protection (required checks need separate authorization).
+#
+# Tools used
+#   * actions/checkout@v4, actions/setup-python@v5 (first-party actions)
+#   * python stdlib: unittest, compileall, py_compile, re, pathlib
+#   * GNU grep: static credential scan + systemd unit sanity
+#   * POSIX sh (dash on ubuntu-latest) and bash: `-n` shell syntax checks
+#
+# Known limitations (documented on purpose, not hidden)
+#   * Credential scan is PATTERN-based (JWT, sb_secret_, sbp_, postgres URI with
+#     inline password, KEY=VALUE assignments) over the working tree; it does NOT
+#     read git history and is not entropy-based, so an unformatted high-entropy
+#     secret that matches no pattern is missed. ci.yml is excluded from the scan
+#     because it holds the patterns as literals (a one-entry allowlist).
+#     Upgrade path (not used here, to avoid a license requirement and an
+#     unpinned third-party action): gitleaks OSS binary or gitleaks action.
+#   * CHAIN_PIN check is STATIC: it compares the pin/chain-root constants of the
+#     versioned poller files against each other. It never reads
+#     ~/.hermes/Supabase/secrets, PIN.json, ~/.hermes/shared/.env or any other
+#     host path, so it CANNOT prove the on-disk extraction still matches the
+#     pin — that remains the host-only canary (`run_poller.sh --canary`).
+#   * test_read_task_gates.py, test_poller_dispatch_guard.py and
+#     canary_readonly.py need hermes_cli / HERMES_HOME / systemd / host secrets
+#     -> HOST-ONLY; deliberately not invoked here.
+#   * systemd unit sanity is grep-only (no systemd in the runner) and does not
+#     validate ExecStart/OnCalendar semantics.
+#   * There is no path filter: any PR produces a check, so "no CI ran" can no
+#     longer be confused with "CI passed".
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: runtime (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests (28)
+        run: PYTHONPATH=src python -m unittest discover -s tests -v
+      - name: Byte-compile package, tests and poller
+        run: |
+          PYTHONPATH=src python -m compileall -q src tests runtime
+          python -m py_compile runtime/poller/*.py
+
+  poller-shell:
+    name: poller shell + systemd units
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax (POSIX sh)
+        run: sh -n runtime/poller/run_poller.sh
+      - name: Shell syntax (bash)
+        run: bash -n runtime/poller/run_poller.sh
+      - name: systemd unit sanity (grep only, no systemd)
+        run: |
+          grep -q '^ExecStart=' runtime/poller/hermes-runtime-poller.service
+          grep -qE '^(OnCalendar|OnUnitActiveSec)=' runtime/poller/hermes-runtime-poller.timer
+          grep -q '^\[Unit\]' runtime/poller/hermes-runtime-poller.service
+          grep -q '^\[Unit\]' runtime/poller/hermes-runtime-poller.timer
+
+  chain-pin:
+    name: CHAIN_PIN consistency (static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: CHAIN_PIN / CHAIN_ROOT must agree across the versioned poller files
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          root = pathlib.Path(".")
+          sha40 = re.compile(r"[0-9a-f]{40}")
+          chain_dir = re.compile(r"chain/([0-9a-f]{6,40})")
+
+          operational = {
+              "runtime/poller/run_poller.sh": "CHAIN_PIN",
+              "runtime/poller/canary_readonly.py": "CHAIN_PIN",
+              "runtime/poller/gen_pin.py": "COMMIT",
+          }
+          problems = []
+          pins = {}
+          roots = {}
+
+          for rel in operational:
+              path = root / rel
+              if not path.is_file():
+                  problems.append(f"{rel}: missing from the tree")
+                  continue
+              text = path.read_text(encoding="utf-8")
+              found = sorted(set(sha40.findall(text)))
+              if len(found) != 1:
+                  problems.append(f"{rel}: expected exactly 1 commit pin, found {found}")
+                  continue
+              pins[rel] = found[0]
+              dirs = sorted(set(chain_dir.findall(text)))
+              if len(dirs) != 1:
+                  problems.append(f"{rel}: expected exactly 1 chain/<sha> root, found {dirs}")
+                  continue
+              roots[rel] = dirs[0]
+
+          print("pin per versioned file:")
+          for rel, sha in sorted(pins.items()):
+              print(f"  {rel}: {sha}")
+
+          distinct = sorted(set(pins.values()))
+          short_roots = sorted(set(roots.values()))
+          if len(distinct) != 1:
+              problems.append(f"pin values disagree across files: {distinct}")
+          elif distinct:
+              pin = distinct[0]
+              print(f"pin agreed: {pin}")
+              if len(short_roots) != 1:
+                  problems.append(f"chain root names disagree across files: {short_roots}")
+              else:
+                  name = short_roots[0]
+                  print(f"chain root agreed: {name}")
+                  if not pin.startswith(name):
+                      if name[:7] != pin[:7]:
+                          problems.append(
+                              f"chain root {name} is not a label of pin {pin} "
+                              f"(git --short=7 => {pin[:7]}, --short=8 => {pin[:8]})"
+                          )
+                      else:
+                          print(
+                              f"::warning::chain root {name} is not a git abbreviation of pin "
+                              f"{pin} (git --short=8 => {pin[:8]}); cosmetic, host dir + 3 files"
+                          )
+
+          # host-free guarantee: the CI check must not depend on the host secret tree
+          host_secret_dir = "Supabase" + "/secrets"
+          for rel in list(operational) + ["runtime/poller/probe_env.py"]:
+              path = root / rel
+              if path.is_file() and host_secret_dir in path.read_text(encoding="utf-8"):
+                  problems.append(f"{rel}: references {host_secret_dir} (host-only, must stay out of CI)")
+
+          # informational drift (audit R6) -> warning, never a failure of this PR
+          probe = root / "runtime/poller/probe_env.py"
+          if distinct and probe.is_file():
+              drift = sorted(set(sha40.findall(probe.read_text(encoding="utf-8"))))
+              if not drift:
+                  print("::warning::probe_env.py declares no commit pin (review manually)")
+              elif distinct[0] not in drift:
+                  print(f"::warning::probe_env.py pins {drift} while the operational pin is {distinct[0]} (known drift, R6)")
+
+          if problems:
+              print("::error::CHAIN_PIN consistency FAILED")
+              for item in problems:
+                  print(f"  - {item}")
+              sys.exit(1)
+          print("CHAIN_PIN consistency: OK (static, host-free)")
+          PY
+
+  secrets:
+    name: static credential scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Static credential scan (stdlib grep, no network, no secret)
+        run: |
+          if grep -rInE \
+              --exclude-dir=.git --exclude-dir=__pycache__ --exclude=.git \
+              --exclude=ci.yml \
+              -e 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' \
+              -e 'sb_secret_[A-Za-z0-9_-]{10,}' \
+              -e 'sbp_[a-z0-9]{20,}' \
+              -e 'postgres(ql)?://[^:@[:space:]]+:[^@[:space:]]+@' \
+              -e '(SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY|SUPABASE_ACCESS_TOKEN|LINEAR_API_KEY|RAILWAY_TOKEN|DATABASE_URL|CONNECTIONSTRINGS__LOLCOACH)[[:space:]]*=[[:space:]]*[^[:space:]$"'"'"'{]{8,}' \
+              .; then
+            echo "::error::candidate credential found in the repository tree"
+            exit 1
+          fi
+          echo "no candidate credential found (pattern scan of the working tree)"
